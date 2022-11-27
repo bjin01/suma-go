@@ -198,15 +198,20 @@ func (l *ListActiveSystem) Getsystems(sumaconf *Sumaconf) error {
 	fmt.Printf("listactivesystem statuscode %d\n", resp.StatusCode)
 	fmt.Println(resp.Request.URL)
 
-	body, _ := ioutil.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		b, _ := ioutil.ReadAll(resp.Body)
+		log.Fatal(string(b))
+	}
 
-	json.Unmarshal([]byte(body), l)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Printf("full resp.body: %+v\n", string(body))
+	/* json.Unmarshal([]byte(body), l)
 	fmt.Printf("lets see listactivesystem: %+v\n", l)
 
 	if l.Success != true || len(l.Result) == 0 {
 		return errors.New(fmt.Sprintf("API call %s failed or no active systems found.", url))
 
-	}
+	} */
 	return nil
 }
 
@@ -339,7 +344,7 @@ func main() {
 	}
 
 	//listupgradablepackages := new(ListLatestUpgradablePackages)
-	err = listactivesystems.Getpackages(&sumaconf)
+	/* err = listactivesystems.Getpackages(&sumaconf)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
 	}
@@ -347,7 +352,7 @@ func main() {
 	err = listactivesystems.InstallUpdates(&sumaconf, jobstart)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
-	}
+	} */
 
 	//fmt.Printf("in main: no of upgradable packages: %+v\n", listactivesystems)
 	err = sumaconf.sumalogout()
