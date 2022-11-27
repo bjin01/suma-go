@@ -22,8 +22,8 @@ var client = http.Client{
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
-
-	Timeout: 10 * time.Second,
+	//Jar:     myCookieJar(),
+	Timeout: 0,
 }
 
 type Sumaconf struct {
@@ -45,8 +45,9 @@ type ListActiveSystem struct {
 		Name        string `json:"name"`
 		ID          int    `json:"id"`
 		LastCheckin string `json:"last_checkin"`
-		Packages    ListLatestUpgradablePackages
-		JobIDs      []UpdateJob
+		//Packages    ListLatestUpgradablePackages
+		Packages ListLatestUpgradablePackages
+		JobIDs   []UpdateJob
 	} `json:"result"`
 }
 
@@ -68,6 +69,7 @@ type ListLatestUpgradablePackages struct {
 }
 
 type SystemScheduleUpdate struct {
+	//SessionKey         string `json:"sessionKey"`
 	Sid                int    `json:"sid"`
 	PackageIds         []int  `json:"packageIds"`
 	EarliestOccurrence string `json:"earliestOccurrence"`
@@ -92,6 +94,7 @@ func httpTransport() *http.Transport {
 	t.MaxConnsPerHost = 100
 	t.MaxIdleConnsPerHost = 100
 	t.TLSClientConfig.InsecureSkipVerify = true
+
 	return t
 }
 
@@ -123,6 +126,7 @@ func (l *Sumaconf) Loginsuma() error {
 		fmt.Println(err)
 		return err
 	}
+	//fmt.Println(string(e))
 
 	login_url := fmt.Sprintf("https://%s/rhn/manager/api/auth/login", l.Server)
 	req, err := http.NewRequest("POST", login_url, bytes.NewBuffer(e))
@@ -142,27 +146,52 @@ func (l *Sumaconf) Loginsuma() error {
 			l.cookie_val = c.Value
 		}
 	}
+	/* url_domain, _ := url.Parse(fmt.Sprintf("https://%s", l.Server))
+	client.Jar.SetCookies(url_domain, resp.Cookies()) */
+	/* 	for _, c := range resp.Cookies() {
+		//if c.Name == "pxt-session-cookie" and c.MaxAge
+		fmt.Printf("received cookies %s: %s, %d\n", c.Name, c.Value, c.MaxAge)
+		if c.Name == "pxt-session-cookie" && c.MaxAge >= 30 {
+			//fmt.Printf("received cookies %s: %s, %d\n", c.Name, c.Value, c.MaxAge)
+			l.cookie_key = c.Name
+			l.cookie_val = c.Value
+			Sumacookie := &http.Cookie{
+				Name:       "pxt-session-cookie",
+				Value:      c.Value,
+				Path:       "",
+				Domain:     "",
+				Expires:    time.Time{},
+				RawExpires: "",
+				MaxAge:     c.MaxAge,
+				Secure:     false,
+				HttpOnly:   false,
+				SameSite:   0,
+				Raw:        "",
+				Unparsed:   []string{},
+			}
+
+			Sumacookie := &http.Cookie{
+				Name:   "pxt-session-cookie",
+				Value:  c.Value,
+				MaxAge: c.MaxAge,
+			}
+			url_domain, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api", l.Server))
+			client.Jar.SetCookies(url_domain, []*http.Cookie{Sumacookie})
+
+		}
+	} */
+
 	fmt.Printf("login status code: %d\n", resp.StatusCode)
+	fmt.Println(resp.Request.URL)
 	return nil
 }
 
-func (l *Sumaconf) CreateRequest(request_type string, url string, e []byte) (*http.Request, error) {
-	req, err := http.NewRequest(request_type, "", nil)
+func (l *Sumaconf) CreateRequest(request_type string, url string) (*http.Request, error) {
+	req, err := http.NewRequest(request_type, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("Got error while creating request object %s\n", err.Error())
 	}
-	if e != nil {
-		req, err = http.NewRequest(request_type, url, bytes.NewBuffer(e))
-		if err != nil {
-			return nil, fmt.Errorf("Got error while creating request object %s\n", err.Error())
-		}
-	} else {
-		req, err = http.NewRequest(request_type, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("Got error while creating request object %s\n", err.Error())
-		}
-	}
-
+	fmt.Printf("cookie name %s and val %s\n", l.cookie_key, l.cookie_val)
 	req.AddCookie(&http.Cookie{
 		Name:       l.cookie_key,
 		Value:      l.cookie_val,
@@ -182,11 +211,31 @@ func (l *Sumaconf) CreateRequest(request_type string, url string, e []byte) (*ht
 
 func (l *ListActiveSystem) Getsystems(sumaconf *Sumaconf) error {
 	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/listActiveSystems", sumaconf.Server))
-	req, err := sumaconf.CreateRequest("GET", url.String(), nil)
+	req, err := sumaconf.CreateRequest("GET", url.String())
 	fmt.Printf("cookie in req: %#v\n", fmt.Sprintf("%s", req.Cookies()))
 	if err != nil {
 		log.Fatalf("Got error %s", err.Error())
 	}
+	/* for _, c := range client.Jar.Cookies(url) {
+		fmt.Printf("Getsystems see jar: %s MaxAge %d \n", c.Value, c.MaxAge)
+	} */
+	//fmt.Printf("see jar: %s\n", fmt.Sprintf("%s", client.Jar.Cookies(url)))
+	/* Sumacookie := &http.Cookie{
+		Name:       sumaconf.cookie_key,
+		Value:      sumaconf.cookie_val,
+		Path:       "",
+		Domain:     "",
+		Expires:    time.Time{},
+		RawExpires: "",
+		MaxAge:     sumaconf.cookie_maxAge,
+		Secure:     false,
+		HttpOnly:   false,
+		SameSite:   0,
+		Raw:        "",
+		Unparsed:   []string{},
+	}
+
+	client.Jar.SetCookies(url, []*http.Cookie{Sumacookie}) */
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -216,7 +265,7 @@ func (u *ListActiveSystem) Getpackages(sumaconf *Sumaconf) error {
 	fmt.Printf("Active Systems: \n")
 	for i, a := range u.Result {
 		listupgpkgs := new(ListLatestUpgradablePackages)
-		req, err := sumaconf.CreateRequest("GET", url.String(), nil)
+		req, err := http.NewRequest("GET", url.String(), nil)
 		if err != nil {
 			log.Fatalf("Got error %s", err.Error())
 		}
@@ -225,6 +274,27 @@ func (u *ListActiveSystem) Getpackages(sumaconf *Sumaconf) error {
 		q.Add("sid", fmt.Sprintf("%d", a.ID))
 
 		req.URL.RawQuery = q.Encode()
+
+		//fmt.Printf("req rawquery: %s", req.URL.RawQuery)
+		/* Sumacookie := &http.Cookie{
+			Name:       sumaconf.cookie_key,
+			Value:      sumaconf.cookie_val,
+			Path:       "",
+			Domain:     "",
+			Expires:    time.Time{},
+			RawExpires: "",
+			MaxAge:     sumaconf.cookie_maxAge,
+			Secure:     false,
+			HttpOnly:   false,
+			SameSite:   0,
+			Raw:        "",
+			Unparsed:   []string{},
+		}
+
+		client.Jar.SetCookies(url, []*http.Cookie{Sumacookie}) */
+
+		//fmt.Println(req.URL.String())
+
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
@@ -277,12 +347,27 @@ func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *stri
 		//fmt.Printf("%#v", systemToupdate)
 		e, err := json.Marshal(systemToupdate)
 		fmt.Printf("\nmarshal systemToupdate: %s\n", fmt.Sprintf("%s", e))
-		req, err := sumaconf.CreateRequest("POST", url.String(), e)
+		req, err := http.NewRequest("POST", url.String(), bytes.NewBuffer(e))
 		if err != nil {
 			log.Fatalf("Got error %s", err.Error())
 		}
 		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+		/* Sumacookie := &http.Cookie{
+			Name:       sumaconf.cookie_key,
+			Value:      sumaconf.cookie_val,
+			Path:       "",
+			Domain:     "",
+			Expires:    time.Time{},
+			RawExpires: "",
+			MaxAge:     sumaconf.cookie_maxAge,
+			Secure:     false,
+			HttpOnly:   false,
+			SameSite:   0,
+			Raw:        "",
+			Unparsed:   []string{},
+		}
 
+		client.Jar.SetCookies(url, []*http.Cookie{Sumacookie}) */
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Fatalf("Error occured. Error is: %s", err.Error())
@@ -299,16 +384,20 @@ func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *stri
 			return errors.New(fmt.Sprintf("API call %s failed, no schedule update job created. %#v", url, jobresult))
 
 		} else {
+
 			fmt.Printf("\nJob: %d created for %s\n", jobresult.JobID, a.Name)
+
 			u.Result[i].JobIDs = append(u.Result[i].JobIDs, *jobresult)
+
 		}
+
 	}
 	return nil
 }
 
 func (l *Sumaconf) sumalogout() error {
 	url := fmt.Sprintf("https://%s/rhn/manager/api/auth/logout", l.Server)
-	req, err := l.CreateRequest("POST", url, nil)
+	req, err := l.CreateRequest("POST", url)
 	if err != nil {
 		log.Fatalf("Got error %s", err.Error())
 	}
@@ -339,7 +428,7 @@ func main() {
 	}
 
 	//listupgradablepackages := new(ListLatestUpgradablePackages)
-	err = listactivesystems.Getpackages(&sumaconf)
+	/* err = listactivesystems.Getpackages(&sumaconf)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
 	}
@@ -347,7 +436,7 @@ func main() {
 	err = listactivesystems.InstallUpdates(&sumaconf, jobstart)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
-	}
+	} */
 
 	//fmt.Printf("in main: no of upgradable packages: %+v\n", listactivesystems)
 	err = sumaconf.sumalogout()
