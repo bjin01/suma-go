@@ -27,9 +27,9 @@ var client = http.Client{
 }
 
 type Sumaconf struct {
-	Server        string `json:"-"`
-	User          string `json:"login"`
-	Password      string `json:"password"`
+	Server        string `json:"-" yaml:"server"`
+	User          string `json:"login" yaml:"user"`
+	Password      string `json:"password" yaml:"password"`
 	cookie_key    string
 	cookie_val    string
 	cookie_maxAge int
@@ -137,6 +137,7 @@ func (l *Sumaconf) Loginsuma() error {
 	}
 	defer resp.Body.Close()
 	for _, c := range resp.Cookies() {
+		fmt.Printf("cookie key: %s; val: %s, valid: %#v\n", c.Name, c.Value, c.Valid())
 		if c.Name == "pxt-session-cookie" && c.MaxAge >= 30 {
 			l.cookie_key = c.Name
 			l.cookie_val = c.Value
