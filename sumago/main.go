@@ -11,20 +11,12 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
-
-var client = http.Client{
-	Transport: httpTransport(),
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
-
-	Timeout: 10 * time.Second,
-}
 
 type Sumaconf struct {
 	Server        string `json:"-" yaml:"server"`
@@ -116,7 +108,20 @@ func init() {
 	}
 }
 
-func (l *Sumaconf) Loginsuma() error {
+func httpClient() *http.Client {
+
+	client := &http.Client{
+		Transport: httpTransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Jar:     myCookieJar(),
+		Timeout: 2 * time.Second,
+	}
+	return client
+}
+
+func (l *Sumaconf) Loginsuma(client *http.Client) error {
 
 	e, err := json.Marshal(l)
 	if err != nil {
@@ -136,13 +141,21 @@ func (l *Sumaconf) Loginsuma() error {
 		log.Fatalf("Error occured. Error is: %s", err.Error())
 	}
 	defer resp.Body.Close()
-	for _, c := range resp.Cookies() {
-		fmt.Printf("cookie key: %s; val: %s, valid: %#v\n", c.Name, c.Value, c.Valid())
-		if c.Name == "pxt-session-cookie" && c.MaxAge >= 30 {
-			l.cookie_key = c.Name
-			l.cookie_val = c.Value
+
+	if len(resp.Cookies()) != 0 {
+		urlObj, _ := url.Parse(fmt.Sprintf("https://%s", l.Server))
+
+		for a, c := range resp.Cookies() {
+			fmt.Printf("cookie key: %s; val: %s, valid: %#v\n", c.Name, c.Value, c.Valid())
+			if c.Name == "pxt-session-cookie" && c.MaxAge >= 30 {
+				client.Jar.SetCookies(urlObj, []*http.Cookie{resp.Cookies()[a]})
+				l.cookie_key = c.Name
+				l.cookie_val = c.Value
+			}
 		}
+
 	}
+
 	fmt.Printf("login status code: %d\n", resp.StatusCode)
 	return nil
 }
@@ -164,7 +177,7 @@ func (l *Sumaconf) CreateRequest(request_type string, url string, e []byte) (*ht
 		}
 	}
 
-	req.AddCookie(&http.Cookie{
+	/* req.AddCookie(&http.Cookie{
 		Name:       l.cookie_key,
 		Value:      l.cookie_val,
 		Path:       "",
@@ -177,11 +190,17 @@ func (l *Sumaconf) CreateRequest(request_type string, url string, e []byte) (*ht
 		SameSite:   0,
 		Raw:        "",
 		Unparsed:   []string{},
-	})
+	}) */
 	return req, nil
 }
 
-func (l *ListActiveSystem) Getsystems(sumaconf *Sumaconf) error {
+func (l *ListActiveSystem) Getsystems(client *http.Client, sumaconf *Sumaconf) error {
+
+	err := sumaconf.Loginsuma(client)
+	if err != nil {
+		log.Fatalf("sumaconf login got error %s", err.Error())
+	}
+
 	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/listActiveSystems", sumaconf.Server))
 	req, err := sumaconf.CreateRequest("GET", url.String(), nil)
 	fmt.Printf("cookie in req: %#v\n", fmt.Sprintf("%s", req.Cookies()))
@@ -206,17 +225,17 @@ func (l *ListActiveSystem) Getsystems(sumaconf *Sumaconf) error {
 
 	body, _ := ioutil.ReadAll(resp.Body)
 	fmt.Printf("full resp.body: %+v\n", string(body))
-	/* json.Unmarshal([]byte(body), l)
+	json.Unmarshal([]byte(body), l)
 	fmt.Printf("lets see listactivesystem: %+v\n", l)
 
 	if l.Success != true || len(l.Result) == 0 {
 		return errors.New(fmt.Sprintf("API call %s failed or no active systems found.", url))
 
-	} */
+	}
 	return nil
 }
 
-func (u *ListActiveSystem) Getpackages(sumaconf *Sumaconf) error {
+func (u *ListActiveSystem) Getpackages(client *http.Client, sumaconf *Sumaconf) error {
 	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/listLatestUpgradablePackages", sumaconf.Server))
 
 	fmt.Printf("Active Systems: \n")
@@ -255,11 +274,13 @@ func (u *ListActiveSystem) Getpackages(sumaconf *Sumaconf) error {
 
 func getISOtime(scheduleTime string) string {
 	t := time.Now()
-	AfteroneHour := t.Add(time.Hour * 2)
+	timeval, _ := strconv.Atoi(scheduleTime)
+	s := time.Duration(timeval * 3600)
+	AfteroneHour := t.Add(s)
 	return AfteroneHour.Format(time.RFC3339)
 }
 
-func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *string) error {
+func (u *ListActiveSystem) InstallUpdates(client *http.Client, sumaconf *Sumaconf, scheduleTime string) error {
 	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/schedulePackageInstall", sumaconf.Server))
 	for i, a := range u.Result {
 		systemToupdate := new(SystemScheduleUpdate)
@@ -271,10 +292,10 @@ func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *stri
 			}
 		} else {
 			fmt.Printf("Skip system: %s, no updates to install.\n", a.Name)
-			break
+			continue
 		}
-		if len(systemToupdate.PackageIds) > 0 && strings.TrimSpace(*scheduleTime) != "" {
-			systemToupdate.EarliestOccurrence = getISOtime(*scheduleTime)
+		if len(systemToupdate.PackageIds) > 0 && strings.TrimSpace(scheduleTime) != "" {
+			systemToupdate.EarliestOccurrence = getISOtime(scheduleTime)
 		} else {
 			fmt.Printf("Skip system: %s, no time schedule given.\n", a.Name)
 			break
@@ -296,7 +317,7 @@ func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *stri
 		defer resp.Body.Close()
 
 		body, _ := ioutil.ReadAll(resp.Body)
-		//fmt.Printf("result body: %#v", fmt.Sprintf("%s", body))
+		fmt.Printf("result body: %#v", fmt.Sprintf("%s", body))
 		jobresult := new(UpdateJob)
 		json.Unmarshal([]byte(body), jobresult)
 		//fmt.Printf("lets see listactivesystem: %+v", &listactivesystems)
@@ -312,7 +333,7 @@ func (u *ListActiveSystem) InstallUpdates(sumaconf *Sumaconf, scheduleTime *stri
 	return nil
 }
 
-func (l *Sumaconf) sumalogout() error {
+func (l *Sumaconf) sumalogout(client *http.Client) error {
 	url := fmt.Sprintf("https://%s/rhn/manager/api/auth/logout", l.Server)
 	req, err := l.CreateRequest("POST", url, nil)
 	if err != nil {
@@ -327,36 +348,33 @@ func (l *Sumaconf) sumalogout() error {
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("Logout failed %d", resp.StatusCode)
+	} else {
+		fmt.Printf("SUMA logout.\n")
 	}
 	return nil
 }
 
 func main() {
-
-	err := sumaconf.Loginsuma()
-	if err != nil {
-		log.Fatalf("sumaconf login got error %s", err.Error())
-	}
-
+	client := httpClient()
 	listactivesystems := new(ListActiveSystem)
-	err = listactivesystems.Getsystems(&sumaconf)
+	err := listactivesystems.Getsystems(client, &sumaconf)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
 	}
 
 	//listupgradablepackages := new(ListLatestUpgradablePackages)
-	/* err = listactivesystems.Getpackages(&sumaconf)
+	err = listactivesystems.Getpackages(client, &sumaconf)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
 	}
 
-	err = listactivesystems.InstallUpdates(&sumaconf, jobstart)
+	err = listactivesystems.InstallUpdates(client, &sumaconf, *jobstart)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
-	} */
+	}
 
 	//fmt.Printf("in main: no of upgradable packages: %+v\n", listactivesystems)
-	err = sumaconf.sumalogout()
+	err = sumaconf.sumalogout(client)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
 	}
