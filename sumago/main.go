@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -110,13 +109,44 @@ func init() {
 
 func httpClient() *http.Client {
 
+	transport := http.Transport{
+		/* Proxy: func(*http.Request) (*url.URL, error) {
+		},
+		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		},
+		Dial: func(network string, addr string) (net.Conn, error) {
+		},
+		DialTLSContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		},
+		DialTLS: func(network string, addr string) (net.Conn, error) {
+		},
+		TLSClientConfig:       &tls.Config{}, */
+		TLSHandshakeTimeout:   0,
+		DisableKeepAlives:     true,
+		DisableCompression:    false,
+		MaxIdleConns:          0,
+		MaxIdleConnsPerHost:   0,
+		MaxConnsPerHost:       0,
+		IdleConnTimeout:       0,
+		ResponseHeaderTimeout: 0,
+		ExpectContinueTimeout: 0,
+		/* TLSNextProto:          map[string]func(authority string, c *tls.Conn) http.RoundTripper{},
+		ProxyConnectHeader:    map[string][]string{},
+		GetProxyConnectHeader: func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
+		}, */
+		MaxResponseHeaderBytes: 0,
+		WriteBufferSize:        0,
+		ReadBufferSize:         0,
+		ForceAttemptHTTP2:      false,
+	}
+
 	client := &http.Client{
-		Transport: httpTransport(),
+		Transport: &transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 		Jar:     myCookieJar(),
-		Timeout: 2 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 	return client
 }
@@ -156,7 +186,12 @@ func (l *Sumaconf) Loginsuma(client *http.Client) error {
 
 	}
 
-	fmt.Printf("login status code: %d\n", resp.StatusCode)
+	if resp.StatusCode == 200 {
+		fmt.Println("Login successful.")
+	} else {
+		fmt.Println("Login failed.")
+	}
+
 	return nil
 }
 
@@ -213,20 +248,26 @@ func (l *ListActiveSystem) Getsystems(client *http.Client, sumaconf *Sumaconf) e
 		log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
 	}
 
-	defer resp.Body.Close()
+	//fmt.Printf("listactivesystem statuscode %d\n", resp.StatusCode)
+	//fmt.Println(resp.Request.URL)
 
-	fmt.Printf("listactivesystem statuscode %d\n", resp.StatusCode)
-	fmt.Println(resp.Request.URL)
-
-	if resp.StatusCode != 200 {
-		b, _ := ioutil.ReadAll(resp.Body)
-		log.Fatal(string(b))
+	x := 0
+	for resp.StatusCode == 401 && x < 5 {
+		fmt.Println("Oops, listactivesystems returns 401, retry in 2 seconds...")
+		time.Sleep(time.Second * 2)
+		x++
+		resp, err = client.Do(req)
+		if err != nil {
+			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
+		}
 	}
 
+	defer resp.Body.Close()
+
 	body, _ := ioutil.ReadAll(resp.Body)
-	fmt.Printf("full resp.body: %+v\n", string(body))
+	//fmt.Printf("full resp.body: %+v\n", string(body))
 	json.Unmarshal([]byte(body), l)
-	fmt.Printf("lets see listactivesystem: %+v\n", l)
+	//fmt.Printf("lets see listactivesystem: %+v\n", l)
 
 	if l.Success != true || len(l.Result) == 0 {
 		return errors.New(fmt.Sprintf("API call %s failed or no active systems found.", url))
@@ -255,6 +296,17 @@ func (u *ListActiveSystem) Getpackages(client *http.Client, sumaconf *Sumaconf) 
 			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
 		}
 
+		x := 0
+		for resp.StatusCode == 401 && x < 5 {
+			fmt.Println("Oops, Getpackages returns 401, retry in 2 seconds...")
+			time.Sleep(time.Second * 2)
+			x++
+			resp, err = client.Do(req)
+			if err != nil {
+				log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
+			}
+		}
+
 		defer resp.Body.Close()
 
 		body, _ := ioutil.ReadAll(resp.Body)
@@ -274,8 +326,8 @@ func (u *ListActiveSystem) Getpackages(client *http.Client, sumaconf *Sumaconf) 
 
 func getISOtime(scheduleTime string) string {
 	t := time.Now()
-	timeval, _ := strconv.Atoi(scheduleTime)
-	s := time.Duration(timeval * 3600)
+	scheduleTime = scheduleTime + "h"
+	s, _ := time.ParseDuration(scheduleTime)
 	AfteroneHour := t.Add(s)
 	return AfteroneHour.Format(time.RFC3339)
 }
@@ -303,7 +355,7 @@ func (u *ListActiveSystem) InstallUpdates(client *http.Client, sumaconf *Sumacon
 
 		//fmt.Printf("%#v", systemToupdate)
 		e, err := json.Marshal(systemToupdate)
-		fmt.Printf("\nmarshal systemToupdate: %s\n", fmt.Sprintf("%s", e))
+		//fmt.Printf("\nmarshal systemToupdate: %s\n", fmt.Sprintf("%s", e))
 		req, err := sumaconf.CreateRequest("POST", url.String(), e)
 		if err != nil {
 			log.Fatalf("Got error %s", err.Error())
@@ -314,10 +366,20 @@ func (u *ListActiveSystem) InstallUpdates(client *http.Client, sumaconf *Sumacon
 		if err != nil {
 			log.Fatalf("Error occured. Error is: %s", err.Error())
 		}
+
+		for resp.StatusCode == 401 {
+			fmt.Println("Oops, schedule update job returns 401, retry retry in 2 seconds...")
+			time.Sleep(time.Second * 2)
+			resp, err = client.Do(req)
+			if err != nil {
+				log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
+			}
+		}
+
 		defer resp.Body.Close()
 
 		body, _ := ioutil.ReadAll(resp.Body)
-		fmt.Printf("result body: %#v", fmt.Sprintf("%s", body))
+		//fmt.Printf("result body: %#v", fmt.Sprintf("%s", body))
 		jobresult := new(UpdateJob)
 		json.Unmarshal([]byte(body), jobresult)
 		//fmt.Printf("lets see listactivesystem: %+v", &listactivesystems)
@@ -344,6 +406,18 @@ func (l *Sumaconf) sumalogout(client *http.Client) error {
 	if err != nil {
 		log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
 	}
+
+	x := 0
+	for resp.StatusCode == 401 && x < 5 {
+		fmt.Println("Oops, logout returns 401, retry retry in 2 seconds...")
+		time.Sleep(time.Second * 2)
+		x++
+		resp, err = client.Do(req)
+		if err != nil {
+			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
+		}
+	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
@@ -368,10 +442,10 @@ func main() {
 		log.Fatalf("%s", err.Error())
 	}
 
-	err = listactivesystems.InstallUpdates(client, &sumaconf, *jobstart)
+	/* err = listactivesystems.InstallUpdates(client, &sumaconf, *jobstart)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
-	}
+	} */
 
 	//fmt.Printf("in main: no of upgradable packages: %+v\n", listactivesystems)
 	err = sumaconf.sumalogout(client)
