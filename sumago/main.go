@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -78,12 +79,17 @@ func myCookieJar() *cookiejar.Jar {
 }
 
 func httpTransport() *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 100
-	t.MaxConnsPerHost = 100
-	t.MaxIdleConnsPerHost = 100
-	t.TLSClientConfig.InsecureSkipVerify = true
-	return t
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	customTransport := &http.Transport{
+		Proxy:                 defaultTransport.Proxy,
+		DialContext:           defaultTransport.DialContext,
+		MaxIdleConns:          defaultTransport.MaxIdleConns,
+		IdleConnTimeout:       defaultTransport.IdleConnTimeout,
+		ExpectContinueTimeout: defaultTransport.ExpectContinueTimeout,
+		TLSHandshakeTimeout:   defaultTransport.TLSHandshakeTimeout,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+	}
+	return customTransport
 }
 
 func init() {
@@ -109,45 +115,15 @@ func init() {
 
 func httpClient() *http.Client {
 
-	transport := http.Transport{
-		/* Proxy: func(*http.Request) (*url.URL, error) {
-		},
-		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		},
-		Dial: func(network string, addr string) (net.Conn, error) {
-		},
-		DialTLSContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		},
-		DialTLS: func(network string, addr string) (net.Conn, error) {
-		},
-		TLSClientConfig:       &tls.Config{}, */
-		TLSHandshakeTimeout:   0,
-		DisableKeepAlives:     true,
-		DisableCompression:    false,
-		MaxIdleConns:          0,
-		MaxIdleConnsPerHost:   0,
-		MaxConnsPerHost:       0,
-		IdleConnTimeout:       0,
-		ResponseHeaderTimeout: 0,
-		ExpectContinueTimeout: 0,
-		/* TLSNextProto:          map[string]func(authority string, c *tls.Conn) http.RoundTripper{},
-		ProxyConnectHeader:    map[string][]string{},
-		GetProxyConnectHeader: func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
-		}, */
-		MaxResponseHeaderBytes: 0,
-		WriteBufferSize:        0,
-		ReadBufferSize:         0,
-		ForceAttemptHTTP2:      false,
-	}
-
 	client := &http.Client{
-		Transport: &transport,
+		Transport: httpTransport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 		Jar:     myCookieJar(),
-		Timeout: 15 * time.Second,
+		Timeout: 2 * time.Second,
 	}
+
 	return client
 }
 
@@ -172,18 +148,22 @@ func (l *Sumaconf) Loginsuma(client *http.Client) error {
 	}
 	defer resp.Body.Close()
 
-	if len(resp.Cookies()) != 0 {
-		urlObj, _ := url.Parse(fmt.Sprintf("https://%s", l.Server))
+	urlObj, err := url.Parse(fmt.Sprintf("https://%s", sumaconf.Server))
+	if err != nil {
+		log.Fatalf("Error occured. Error is: %s", err.Error())
+	}
+	client.Jar.SetCookies(urlObj, resp.Cookies())
 
-		for a, c := range resp.Cookies() {
-			fmt.Printf("cookie key: %s; val: %s, valid: %#v\n", c.Name, c.Value, c.Valid())
+	if len(resp.Cookies()) != 0 {
+
+		for _, c := range resp.Cookies() {
+			fmt.Printf("cookie key: %s; val: %s, maxage: %d\n", c.Name, c.Value, c.MaxAge)
 			if c.Name == "pxt-session-cookie" && c.MaxAge >= 30 {
-				client.Jar.SetCookies(urlObj, []*http.Cookie{resp.Cookies()[a]})
+
 				l.cookie_key = c.Name
 				l.cookie_val = c.Value
 			}
 		}
-
 	}
 
 	if resp.StatusCode == 200 {
@@ -212,20 +192,6 @@ func (l *Sumaconf) CreateRequest(request_type string, url string, e []byte) (*ht
 		}
 	}
 
-	/* req.AddCookie(&http.Cookie{
-		Name:       l.cookie_key,
-		Value:      l.cookie_val,
-		Path:       "",
-		Domain:     "",
-		Expires:    time.Time{},
-		RawExpires: "",
-		MaxAge:     0,
-		Secure:     false,
-		HttpOnly:   false,
-		SameSite:   0,
-		Raw:        "",
-		Unparsed:   []string{},
-	}) */
 	return req, nil
 }
 
@@ -236,23 +202,40 @@ func (l *ListActiveSystem) Getsystems(client *http.Client, sumaconf *Sumaconf) e
 		log.Fatalf("sumaconf login got error %s", err.Error())
 	}
 
-	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/listActiveSystems", sumaconf.Server))
-	req, err := sumaconf.CreateRequest("GET", url.String(), nil)
-	fmt.Printf("cookie in req: %#v\n", fmt.Sprintf("%s", req.Cookies()))
+	url, _ := url.Parse(fmt.Sprintf("https://%s/rhn/manager/api/system/listSystems", sumaconf.Server))
+	//req, err := sumaconf.CreateRequest("GET", url.String(), nil)
+	requrl := fmt.Sprintf("https://%s/rhn/manager/api/system/listSystems", sumaconf.Server)
+	fmt.Printf("url is: %s\n", url.String())
+	req, err := http.NewRequest("GET", requrl, nil)
+	if err != nil {
+		log.Fatalf("Got error at creating request %s", err.Error())
+	}
+
+	/* req.AddCookie(&http.Cookie{
+		Name:   sumaconf.cookie_key,
+		Value:  sumaconf.cookie_val,
+		Path:   "",
+		MaxAge: 12,
+	}) */
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	//fmt.Printf("cookie in req: %#v\n", fmt.Sprintf("%#v", req.Cookies()[0]))
+	fmt.Printf("Methode: %s %s %s ---- req. url %s\n", req.Method, req.Host, req.Header, req.URL)
 	if err != nil {
 		log.Fatalf("Got error %s", err.Error())
 	}
 
+	time.Sleep(1 * time.Second)
+	//fmt.Printf("request cookies: %#v", req.Cookies())
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
 	}
 
-	//fmt.Printf("listactivesystem statuscode %d\n", resp.StatusCode)
+	fmt.Printf("listactivesystem statuscode %d\n", resp.StatusCode)
 	//fmt.Println(resp.Request.URL)
 
-	x := 0
-	for resp.StatusCode == 401 && x < 5 {
+	//x := 0
+	/* for resp.StatusCode == 401 && x < 5 {
 		fmt.Println("Oops, listactivesystems returns 401, retry in 2 seconds...")
 		time.Sleep(time.Second * 2)
 		x++
@@ -260,14 +243,14 @@ func (l *ListActiveSystem) Getsystems(client *http.Client, sumaconf *Sumaconf) e
 		if err != nil {
 			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
 		}
-	}
+	} */
 
 	defer resp.Body.Close()
 
 	body, _ := ioutil.ReadAll(resp.Body)
 	//fmt.Printf("full resp.body: %+v\n", string(body))
 	json.Unmarshal([]byte(body), l)
-	//fmt.Printf("lets see listactivesystem: %+v\n", l)
+	fmt.Printf("lets see listactivesystem: %+v\n", l)
 
 	if l.Success != true || len(l.Result) == 0 {
 		return errors.New(fmt.Sprintf("API call %s failed or no active systems found.", url))
@@ -291,6 +274,7 @@ func (u *ListActiveSystem) Getpackages(client *http.Client, sumaconf *Sumaconf) 
 		q.Add("sid", fmt.Sprintf("%d", a.ID))
 
 		req.URL.RawQuery = q.Encode()
+		time.Sleep(1 * time.Second)
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
@@ -356,6 +340,7 @@ func (u *ListActiveSystem) InstallUpdates(client *http.Client, sumaconf *Sumacon
 		//fmt.Printf("%#v", systemToupdate)
 		e, err := json.Marshal(systemToupdate)
 		//fmt.Printf("\nmarshal systemToupdate: %s\n", fmt.Sprintf("%s", e))
+		time.Sleep(1 * time.Second)
 		req, err := sumaconf.CreateRequest("POST", url.String(), e)
 		if err != nil {
 			log.Fatalf("Got error %s", err.Error())
@@ -401,7 +386,15 @@ func (l *Sumaconf) sumalogout(client *http.Client) error {
 	if err != nil {
 		log.Fatalf("Got error %s", err.Error())
 	}
+	/* req.AddCookie(&http.Cookie{
+		Name:   sumaconf.cookie_key,
+		Value:  sumaconf.cookie_val,
+		Path:   "",
+		MaxAge: 12,
+	}) */
 
+	fmt.Println("We pause 2 sec and logout.")
+	time.Sleep(time.Second * 1)
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Fatalf("Error occured while calling %s Error is: %s", url, err.Error())
@@ -442,10 +435,10 @@ func main() {
 		log.Fatalf("%s", err.Error())
 	}
 
-	/* err = listactivesystems.InstallUpdates(client, &sumaconf, *jobstart)
+	err = listactivesystems.InstallUpdates(client, &sumaconf, *jobstart)
 	if err != nil {
 		log.Fatalf("%s", err.Error())
-	} */
+	}
 
 	//fmt.Printf("in main: no of upgradable packages: %+v\n", listactivesystems)
 	err = sumaconf.sumalogout(client)
